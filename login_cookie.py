@@ -1,63 +1,74 @@
-import time
-import pyautogui
-import pyperclip
-import webbrowser
+import asyncio
 import json
-import browser_cookie3
+from pyppeteer import launch
+from pyppeteer_stealth import stealth
 
-# 讀取帳號密碼
-with open("credentials.json", "r", encoding="utf-8") as f:
-    creds = json.load(f)
+LOGIN_URL = "https://xs.teamxports.com/xs03.aspx?module=login_page&files=login&PT=1"
+CREDENTIALS_PATH = "credentials.json"
+COOKIE_OUTPUT_PATH = "cookies_teamxports.json"
 
-USERNAME = creds["username"]
-PASSWORD = creds["password"]
+async def main():
+    with open(CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+        creds = json.load(f)
+    username = creds["username"]
+    password = creds["password"]
 
-# Step 1: 開啟登入網頁
-url = "https://xs.teamxports.com/xs03.aspx?module=login_page&files=login&PT=1"
-webbrowser.open(url)
-print("🌐 開啟登入頁...")
-time.sleep(10)  # 等 Cloudflare 自動驗證與網頁載入
+    browser = await launch({
+        "headless": False,
+        "args": [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled",
+        ],
+        "defaultViewport": None,
+    })
 
-# Step 2: 點擊 SweetAlert2 的 OK 按鈕
-pyautogui.click(x=1119, y=251)  # ❗請依你的畫面調整座標
-print("✅ 點擊 SweetAlert2 OK1")
-time.sleep(1)
+    page = await browser.newPage()
+    await stealth(page)
 
-# Step 2: 點擊 SweetAlert2 的 OK 按鈕
-pyautogui.click(x=965, y=710)  # ❗請依你的畫面調整座標
-print("✅ 點擊 SweetAlert2 OK2")
-time.sleep(1)
+    # 🔔 自動關閉原生 alert
+    page.on("dialog", lambda dialog: asyncio.ensure_future(handle_dialog(dialog)))
 
-# Step 3: 輸入帳號
-pyautogui.click(x=1013, y=336)  # ❗帳號欄位位置
-pyperclip.copy(USERNAME)
-pyautogui.hotkey("command", "v")  # Mac 使用 command，Windows 改 ctrl
-time.sleep(0.5)
+    print("⚡ 打開登入頁面...")
+    await page.goto(LOGIN_URL, {'waitUntil': 'domcontentloaded'})
 
-# Step 4: 輸入密碼
-pyautogui.press("tab")
-pyperclip.copy(PASSWORD)
-pyautogui.hotkey("command", "v")
-time.sleep(0.5)
+    # 嘗試關閉 SweetAlert2 彈窗
+    try:
+        print("🔎 嘗試點擊 SweetAlert2 OK 按鈕...")
+        await asyncio.sleep(1.5)
+        await page.evaluate("""() => {
+            const btn = document.querySelector('.swal2-confirm');
+            if (btn) btn.click();
+        }""")
+    except Exception as e:
+        print("⚠️ SweetAlert2 未偵測到：", e)
 
-# Step 2: 點擊 SweetAlert2 的 OK 按鈕
-pyautogui.click(x=949, y=482)  # ❗請依你的畫面調整座標
-print("✅ 點擊 SweetAlert2 OK2")
-time.sleep(1)
-print("🚀 已完成登入流程")
+    # 等待 Turnstile 通過驗證（Cloudflare）
+    print("🔐 等待 Turnstile 驗證處理...")
+    await asyncio.sleep(8)
 
-import browser_cookie3
-import json
+    print("📝 填入帳密...")
+    await page.type("#ContentPlaceHolder1_loginid", username)
+    await page.type("#loginpw", password)
 
-# 擷取來自 Chrome 瀏覽器、指定網站的 cookie
-cj = browser_cookie3.chrome(domain_name='teamxports.com')
+    print("🚀 點擊登入按鈕...")
+    await page.click("#login_but")
 
-# 轉為 dict 形式方便儲存
-cookie_dict = {cookie.name: cookie.value for cookie in cj}
+    await asyncio.sleep(5)
 
-# 儲存到 json 檔案
-with open("cookies_teamxports.json", "w", encoding="utf-8") as f:
-    json.dump(cookie_dict, f, indent=2, ensure_ascii=False)
+    cookies = await page.cookies()
+    cookie_dict = {cookie["name"]: cookie["value"] for cookie in cookies}
+    with open(COOKIE_OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(cookie_dict, f, indent=2, ensure_ascii=False)
 
-print("🍪 Cookie 已儲存為 cookies_teamxports.json")
+    print(f"✅ Cookie 已儲存為 {COOKIE_OUTPUT_PATH}")
+    await browser.close()
 
+async def handle_dialog(dialog):
+    print(f"🛑 原生 alert 偵測到：{dialog.message}")
+    await asyncio.sleep(0.5)
+    await dialog.accept()
+    print("✅ 已自動關閉原生 alert")
+
+if __name__ == "__main__":
+    asyncio.get_event_loop().run_until_complete(main())
